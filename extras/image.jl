@@ -785,6 +785,109 @@ end
 imfilter(img, filter) = imfilter(img, filter, "replicate", 0)
 imfilter(img, filter, border) = imfilter(img, filter, border, 0)
 
+# Spatial filtering for arbitrary dimensionality.
+function imfilterN{T,n}(img::Array{T,n}, filter::Array{T,n},
+                        border::String, value::T)
+    sf = size(filter)
+    fw = iceil(([sf...] - 1) / 2)
+    A = padarray(img, fw, fw, border, value)
+
+    offsets = 0
+    start_index = 0
+    stride = 1
+    for k = 1:n
+        m = sf[k]
+        indices = [0:m-1] - fld((m - 1), 2)
+        offsets = bsxfun(+, offsets, stride * cat(k, indices...))
+        start_index += stride * fld(m, 2)
+        stride *= size(A, k)
+    end
+    # bsxfun sheds trailing singleton dimensions, reinstate them.
+    offsets = reshape(offsets, sf)
+
+    I = filter .!= 0
+    kernel_values = filter[I]
+    kernel_offsets = offsets[I]
+    return imfilterN_loops(A, kernel_values, kernel_offsets, [size(img)...],
+                           start_index)
+end
+
+# Build nested loops to create dimensionality-specialized versions
+# of this function. Further calls will be directly dispatched to the
+# generated code, so this code generation is only done once per
+# dimensionality.
+function imfilterN_loops{T,n}(A::Array{T,n}, coefficients::Vector{T},
+                              offsets::Vector{Int}, out_size::Vector{Int},
+                              start_index::Int)
+    # Build the innermost spatial loop and the coefficient loop.
+    ex = quote
+        for i1 = 1:out_size[1]
+            index_in = i1 + in_size[1] * index_in1 + start_index;
+            index_out = i1 + out_size[1] * index_out1
+            sum = zero(T)
+            for k = 1:num_coefficients
+                sum += A[index_in + offsets[k]] * coefficients[k]
+            end
+            B[index_out] = sum;
+        end
+    end
+
+    # Build the remaining spatial loops.
+    for k = 2:n
+        loop_var = symbol(string("i", k))
+        a = symbol(string("index_in", k - 1))
+        b = symbol(string("index_in", k))
+        c = symbol(string("index_out", k - 1))
+        d = symbol(string("index_out", k))
+
+        ex = quote
+            for $(loop_var) = 1:out_size[$k]
+                $a = $(loop_var) - 1 + in_size[$k] * $b
+                $c = $(loop_var) - 1 + out_size[$k] * $d
+                $(ex)
+            end
+        end
+    end
+
+    # Add initialization of outermost index counters.
+    b = symbol(string("index_in", n))
+    d = symbol(string("index_out", n))
+    ex = quote
+        $b = 0
+        $d = 0
+        $(ex)
+    end
+
+    # Embed the loops in a function definition and other interfacing
+    # pieces of code.
+    ex = quote
+        function imfilterN_loops{T}(A::Array{T,$n}, coefficients::Vector{T},
+                                    offsets::Vector{Int}, out_size::Vector{Int},
+                                    start_index::Int)
+            B = zeros(T, out_size...)
+            num_coefficients = length(coefficients)
+            in_size = size(A)
+            $(ex)
+            return B
+        end
+    end
+
+    # Evaluate the generated expression to overload the function we
+    # are running now with a variant that is specialized to
+    # dimensionality n. Further calls for this dimensionality will be
+    # dispatched there instead.
+    global imfilterN_loops
+    eval(ex)
+
+    # Run the generated function from here, this time.
+    @eval imfilterN_loops($A, $(coefficients), $(offsets), $(out_size),
+                          $(start_index))
+end
+
+imfilterN{T}(img::Matrix{T}, filter::Matrix{T}) = imfilterN(img, filter, "replicate", zero(T))
+imfilterN{T}(img::Matrix{T}, filter::Matrix{T}, border::String) = imfilterN(img, filter, border, zero(T))
+imfilterN{T}(img::Matrix{T}, filter::Matrix{T}, value::T) = imfilterN(img, filter, "value", value)
+
 function imlineardiffusion{T}(img::Array{T,2}, dt::FloatingPoint, iterations::Integer)
     u = img
     f = imlaplacian()
