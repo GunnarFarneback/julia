@@ -666,7 +666,7 @@ function imfilter{T}(img::Matrix{T}, filter::Matrix{T}, border::String, value)
     A = zeros(T, si[1]+sf[1]-1, si[2]+sf[2]-1)
     s1, s2 = int((sf[1]-1)/2), int((sf[2]-1)/2)
     # correlation instead of convolution
-    filter = fliplr(fliplr(filter).')
+    filter = rot180(filter)
     mid1 = s1+1:s1+si[1]
     mid2 = s2+1:s2+si[2]
     left = 1:s2
@@ -719,8 +719,8 @@ function imfilter{T}(img::Matrix{T}, filter::Matrix{T}, border::String, value)
     if separable
         # conv2 isn't suitable for this (kernel center should be the actual center of the kernel)
         #C = conv2(U[:,1]*sqrt(S[1]), vec(V[1,:])*sqrt(S[1]), A)
-        x = U[:,1]*sqrt(S[1])
-        y = vec(V[1,:])*sqrt(S[1])
+        y = U[:,1]*sqrt(S[1])
+        x = vec(V[1,:])*sqrt(S[1])
         sa = size(A)
         m = length(y)+sa[1]
         n = length(x)+sa[2]
